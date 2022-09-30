@@ -1,4 +1,8 @@
+use async_net;
+use async_std::prelude::*;
 use byteorder::{ByteOrder, NetworkEndian};
+use futures::executor::block_on;
+use futures_lite::future::FutureExt;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::env;
@@ -86,6 +90,22 @@ fn receive_packet(stream_receive: &mut TcpStream) -> Result<Packet, Box<dyn erro
         return Err(Box::new(MyError::PacketTooLong));
     }
     stream_receive.read_exact(&mut buf[2..(packet_length + 2) as usize])?;
+
+    decode_packet(&buf[0..(packet_length + 2) as usize])
+}
+
+async fn async_receive_packet(
+    stream: &mut async_net::TcpStream,
+) -> Result<Packet, Box<dyn error::Error>> {
+    let mut buf: Box<[u8; 1024]> = Box::new([0; 1024]);
+    stream.read_exact(&mut buf[0..2]).await?;
+    let packet_length = NetworkEndian::read_u16(&buf[0..2]);
+    if (packet_length + 2) > 1024 {
+        return Err(Box::new(MyError::PacketTooLong));
+    }
+    stream
+        .read_exact(&mut buf[2..(packet_length + 2) as usize])
+        .await?;
 
     decode_packet(&buf[0..(packet_length + 2) as usize])
 }
@@ -203,10 +223,76 @@ fn client_main() {
     }
 }
 
+async fn async_client_main() {
+    match async_net::TcpStream::connect("localhost:2319").await {
+        Ok(mut stream) => {
+            println!("Connected to server.");
+            let stream_to_server = stream.clone();
+
+            let s = receive_from_server(&mut stream);
+
+            let s2 = handle_user_input(stream_to_server);
+            s.race(s2).await;
+        }
+        Err(e) => {
+            println!("ERROR connecting: {}", e);
+        }
+    }
+}
+
+async fn handle_user_input(mut stream: async_net::TcpStream) {
+    loop {
+        eprint!(">>>");
+        let mut content = String::new();
+        async_std::io::stdin()
+            .read_line(&mut content)
+            .await
+            .unwrap();
+        let content = content.trim();
+        if content.len() == 0 {}
+        let p = Packet::Say(Message {
+            from: 0,
+            to: 0,
+            content: content.as_bytes().to_vec(),
+        });
+
+        let mut buf: Box<[u8; 1024]> = Box::new([0; 1024]);
+        let packet_length = encode_packet(&p, &mut *buf);
+
+        if let Err(error) = stream.write_all(&(*buf)[0..packet_length]).await {
+            println!("ERROR sending to server: {}", error);
+        }
+    }
+}
+
+async fn receive_from_server(stream: &mut async_net::TcpStream) {
+    loop {
+        let packet = async_receive_packet(stream).await;
+        match packet {
+            Ok(packet) => match packet {
+                Packet::UserList => {}
+                Packet::Say(message) => {
+                    println!(
+                        "[{} to {}: {}]",
+                        message.from,
+                        message.to,
+                        String::from_utf8(message.content).unwrap()
+                    );
+                    eprint!(">>>");
+                }
+            },
+            Err(error) => {
+                println!("ERROR receiving packet: {}", error);
+                break;
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() == 2 && args[1] == "-s" {
         server_main();
     }
-    client_main();
+    block_on(async_client_main());
 }

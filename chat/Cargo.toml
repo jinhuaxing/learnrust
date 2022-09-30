@@ -8,3 +8,7 @@ edition = "2021"
 [dependencies]
 byteorder = "1.4.3"
 lazy_static = "1.4.0"
+futures = "0.3.24"
+futures-lite = "1.12.0"
+async-net = "1.7.0"
+async-std = "1.12.0"
